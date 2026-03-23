@@ -1,0 +1,394 @@
+# PriorAI — Product Requirements Document
+
+**Version**: 1.0  
+**Author**: Akshay Kumar  
+**Timeline**: 2 weeks  
+**Status**: Draft
+
+---
+
+## 1. Problem Statement
+
+Prior authorization is the single most administratively burdensome workflow in outpatient healthcare. A clinician identifies a treatment, submits clinical evidence to the payer, waits days for a decision, and frequently receives a denial requiring a hand-written appeal — a process that consumes 15–30 minutes of skilled staff time per case and delays patient care.
+
+The core bottleneck is synthesis: the relevant evidence (diagnosis history, medication records, lab results, clinical notes) exists across multiple sources and must be manually assembled, evaluated against payer-specific medical necessity criteria, and formatted into a justification narrative. This is exactly the kind of multi-step reasoning and document generation task that LLM agents are suited for.
+
+PriorAI is a locally-runnable multimodal agent that automates this synthesis. Given a patient ID (from a local FHIR server), an optional PDF clinical document, and an optional voice note from the ordering clinician, it produces a structured prior auth submission and a draft appeal letter — with a full audit trace of every step.
+
+---
+
+## 2. Target User
+
+**Primary**: Healthcare billing staff and prior authorization coordinators at outpatient clinics who currently assemble auth packages manually — pulling patient records, validating diagnosis codes, checking payer criteria, and writing justification letters by hand across disconnected systems.
+
+**Pain points this addresses**: 15–30 minutes per auth case spent on manual record synthesis; high denial rates from incomplete or poorly framed submissions; no audit trail for appeal follow-up; staff context-switching between EHR, payer portals, and Word documents.
+
+**What a successful run looks like for this user**: Enter a patient ID, optionally attach a clinical note or voice memo, and receive a complete auth submission package — with evidence citations, a denial risk score, and a ready-to-send appeal letter — in under 60 seconds.
+
+---
+
+## 3. Goals & Success Metrics
+
+| Goal | Metric | Target |
+|------|--------|--------|
+| Demonstrate LLM orchestration depth | Number of distinct tool calls per agent run | ≥ 4 tools per run |
+| Real EHR integration | Data source | HAPI FHIR R4, Synthea patients |
+| Multimodal input handling | Input types supported | PDF + audio + structured codes |
+| Production-grade output | Letter quality | Coherent, cited, downloadable |
+| End-to-end time for billing staff | Time from submit to downloadable letter | < 60 seconds |
+| Setup simplicity | Commands to run locally after clone | ≤ 3 commands |
+
+---
+
+## 4. Non-Goals
+
+- **Not a production medical tool**: No real patient data. No clinical validation. Not FDA-regulated.
+- **Not a full billing platform**: No claims submission, no payer portal integration, no remittance handling.
+- **Not a voice assistant**: Whisper transcription is offline batch processing, not real-time conversation.
+- **Not Epic-integrated (yet)**: Epic sandbox access is applied for but not required for v1. HAPI FHIR is the data layer.
+
+---
+
+## 5. System Architecture
+
+```
+Inputs
+  ├── Patient ID          → FHIR tool (HAPI R4 server)
+  ├── PDF clinical doc    → PDF extraction tool (pdfplumber)
+  └── Voice note (.wav)   → Transcription tool (faster-whisper, local)
+
+          ↓
+
+Orchestrator Agent (Claude tool-use loop)
+  ├── Calls tools in sequence based on available inputs
+  ├── Maintains message history across tool calls
+  └── Handles partial failures gracefully
+
+          ↓
+
+Tools (each is a discrete callable unit)
+  ├── fetch_patient_context(patient_id)     → FHIR R4 bundle
+  ├── extract_pdf_content(file_path)        → structured text
+  ├── transcribe_voice(file_path)           → transcript string
+  ├── validate_icd10_codes(code_list)       → validated + described codes
+  ├── check_auth_criteria(dx, procedure)    → matched payer criteria
+  └── score_clinical_risk(patient_data)     → denial probability + SHAP explanation
+
+          ↓
+
+Reasoning step (Claude Sonnet — one call per run)
+  Synthesizes all tool outputs into:
+  ├── Authorization decision (APPROVE / DENY / NEEDS_REVIEW) + confidence
+  ├── Supporting evidence summary with source citations
+  ├── Draft prior auth letter (structured, downloadable)
+  └── Audit trace (each tool call, input, output, timestamp)
+
+          ↓
+
+FastAPI backend → React frontend
+```
+
+---
+
+## 6. Detailed Requirements
+
+### 6.1 Data Layer — HAPI FHIR + Synthea
+
+**R1.1** Run HAPI FHIR R4 server locally via Docker (`hapiproject/hapi:latest`).  
+**R1.2** Generate ≥ 100 synthetic patients using Synthea with realistic comorbidities (diabetes, hypertension, COPD, oncology cases).  
+**R1.3** Load Synthea FHIR output into HAPI via bulk import or individual POST requests.  
+**R1.4** FHIR client must query the following resource types: `Patient`, `Condition`, `MedicationRequest`, `Observation`, `Coverage`.  
+**R1.5** All FHIR queries must use standard R4 search parameters (e.g. `?patient={id}&_count=50`).  
+**R1.6** README must accurately describe data as synthetic and the server as HAPI FHIR R4.
+
+### 6.2 Agent Orchestration
+
+**R2.1** The agent uses a single Claude model throughout: `claude-haiku-4-5` during development, `claude-sonnet-4-5` for the final demo. Claude drives both the tool-calling loop and the final reasoning/generation step. Model is set via `CLAUDE_MODEL` env var — no code changes to switch.
+**R2.2** Agent must maintain a shared state object across all tool calls containing: `patient_id`, `inputs_received`, `tool_results`, `reasoning_chain`, `final_output`.  
+**R2.3** Agent must handle the case where only a subset of inputs is provided (e.g. patient ID only, no PDF, no audio) and route to the appropriate subset of tools.  
+**R2.4** Tool failures must be caught, logged, and included in the audit trace without crashing the agent run.  
+**R2.5** The orchestrator must call tools in a sensible dependency order: FHIR and PDF extraction before criteria checking, criteria checking before reasoning.  
+**R2.6** The full agent run must complete in under 60 seconds on a local machine with a single patient.
+
+### 6.3 Tools
+
+**R3.1 — `fetch_patient_context`**  
+- Input: `patient_id` (string)  
+- Queries HAPI FHIR for Patient demographics, Conditions (ICD-10), MedicationRequests, Observations (labs/vitals)  
+- Returns: structured dict with all resource data  
+- Error: if patient not found, return descriptive error dict
+
+**R3.2 — `extract_pdf_content`**  
+- Input: file path to PDF  
+- Uses `pdfplumber` to extract text page by page  
+- Returns: dict with `pages`, `full_text`, `word_count`  
+- Handles encrypted or image-only PDFs gracefully (return error, don't crash)
+
+**R3.3 — `transcribe_voice`**  
+- Input: file path to `.wav` or `.mp3`  
+- Uses `faster-whisper` running locally (no API calls)  
+- Model: `base.en` for speed on local hardware  
+- Returns: `transcript` string, `duration_seconds`, `language`
+
+**R3.4 — `validate_icd10_codes`**  
+- Input: list of ICD-10 code strings extracted from FHIR or PDF  
+- Uses a local ICD-10 lookup (static JSON or free public dataset)  
+- Returns: list of `{code, description, valid, category}` objects  
+- Flags codes that are outdated or misformatted
+
+**R3.5 — `check_auth_criteria`**  
+- Input: primary diagnosis code, requested procedure code  
+- Checks against a curated set of CMS/payer medical necessity criteria (stored as local JSON — sourced from public CMS LCD/NCD documents)  
+- Returns: `{criteria_met: bool, matched_criteria: [...], missing_criteria: [...], confidence: float}`  
+- Must cover at least 10 common procedure/diagnosis pairs
+
+**R3.6 — `score_clinical_risk`**  
+- Input: structured patient data dict (from FHIR tool output)  
+- Uses a CatBoost binary classifier trained fresh on clinically validated claims data (MIMIC-IV if PhysioNet access is available; CMS DE-SynPUF otherwise) to predict prior authorization denial probability  
+- ICD-10 codes passed as raw strings declared via `cat_features` — no manual encoding required  
+- Returns: `{denial_probability: float, risk_tier: "low|medium|high", shap_top_factors: [...]}`  
+- SHAP via `model.get_feature_importance(type='ShapValues')` — built into CatBoost, no separate library call  
+- Model trained and saved as `.cbm` file; loaded at backend startup via `CatBoostClassifier().load_model('model.cbm')`  
+- No prior models imported — trained from scratch specifically for prior auth denial prediction
+
+### 6.4 Reasoning & Output Generation
+
+**R4.1** Reasoning step calls the Claude API. Model is selectable via `CLAUDE_MODEL` env var: `claude-haiku-4-5` during development (fast, cheap — cents per run), `claude-sonnet-4-5` for the final demo (stronger multi-source synthesis and letter quality). No other providers. No code changes required to switch — only the env var.
+**R4.2** System prompt instructs Claude to act as a prior authorization specialist, cite specific evidence from tool outputs, and produce output in a defined JSON schema.  
+**R4.3** Output JSON schema:
+```json
+{
+  "decision": "APPROVE | DENY | NEEDS_REVIEW",
+  "confidence": 0.0–1.0,
+  "evidence_summary": "string",
+  "criteria_assessment": "string",
+  "risk_note": "string",
+  "draft_letter": "string (full letter text)",
+  "citations": ["source1", "source2"],
+  "audit_trace": [{"step": "...", "tool": "...", "input": "...", "output": "...", "timestamp": "..."}]
+}
+```
+**R4.4** Draft letter must include: patient demographics, diagnosis summary, procedure justification, evidence citations, and a signature block.  
+**R4.5** Confidence score must be derived from: criteria match rate + risk model score + completeness of input data.
+
+### 6.5 Backend API (FastAPI)
+
+**R5.1** `POST /run` — accepts `patient_id`, optional `pdf` file upload, optional `audio` file upload. Starts agent run.  
+**R5.2** `GET /stream/{run_id}` — Server-Sent Events endpoint streaming agent step updates in real time.  
+**R5.3** `GET /result/{run_id}` — returns final output JSON once complete.  
+**R5.4** `GET /patients` — returns list of available patient IDs from HAPI FHIR (for the UI patient selector).  
+**R5.5** All endpoints must include CORS headers for local frontend dev (`localhost:5173`).  
+**R5.6** Run state must be stored in-memory (dict keyed by `run_id`). No database required for v1.
+
+### 6.6 Frontend (React)
+
+**R6.1** Patient selector: dropdown populated from `GET /patients`, shows patient ID + name + age.  
+**R6.2** File upload: drag-and-drop or click-to-upload for PDF and audio file, separately.  
+**R6.3** Submit button triggers `POST /run` and begins polling `GET /stream/{run_id}`.  
+**R6.4** Live step feed: as SSE events arrive, render each tool call as a card showing tool name, status (running / complete / failed), and a one-line summary of the output.  
+**R6.5** Output panel: once complete, shows decision badge (color-coded), confidence percentage, risk tier, evidence summary, and letter preview.  
+**R6.6** Download button: exports the draft letter as a `.txt` file and the full audit trace as `.json`.  
+**R6.7** Error states: if a tool fails, show it clearly in the step feed with the error message. Do not hide failures.  
+**R6.8** No authentication required. Single-page app, no routing.
+
+---
+
+## 7. Tech Stack
+
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| EHR server | HAPI FHIR R4 (Docker) | `hapiproject/hapi:latest` |
+| Synthetic data | Synthea | v3.x, FHIR R4 output mode |
+| Agent framework | Raw Claude tool-use API | Direct tool_use/tool_result loop, no framework |
+| LLM (dev) | `claude-haiku-4-5` | Fast and cheap during development |
+| LLM (prod) | `claude-sonnet-4-5` | Used for final demo and letter generation |
+| PDF extraction | `pdfplumber` | Pure Python, no external calls |
+| Speech-to-text | `faster-whisper` | Runs fully local, `base.en` model |
+| Risk model | CatBoost binary classifier | Trained fresh on MIMIC-IV or CMS DE-SynPUF |
+| ICD-10 lookup | Local JSON dataset | CMS 2025 ICD-10-CM flat file |
+| Backend | FastAPI + uvicorn | SSE via `sse-starlette` |
+| Frontend | React + Vite | Plain fetch, no heavy UI library |
+| Containerization | Docker Compose | HAPI + backend as services |
+
+---
+
+## 8. Build Tasks
+
+### Week 1 — Backend & Agent
+
+**Task 1 — EHR foundation** *(Day 1, ~4h)*
+- Pull and run `hapiproject/hapi:latest` via Docker
+- Install and run Synthea, generate 100 patients with `--exporter.fhir.export=true`
+- Write a Python loader script that POSTs each Synthea FHIR bundle to `http://localhost:8080/fhir`
+- Verify with `GET /fhir/Patient?_count=10` returning real results
+- Apply for Epic sandbox at `fhir.epic.com` (async — won't block build)
+
+**Task 2 — FHIR tool** *(Day 2, ~3h)*
+- Implement `fetch_patient_context(patient_id)` using `requests` or `fhirclient`
+- Query Patient, Condition, MedicationRequest, Observation resources
+- Normalize response into a flat dict the agent can reason over
+- Write unit test with a known Synthea patient ID
+
+**Task 3 — PDF and audio tools** *(Day 2–3, ~3h)*
+- Implement `extract_pdf_content(file_path)` with `pdfplumber`
+- Implement `transcribe_voice(file_path)` with `faster-whisper`, download `base.en` model
+- Test both with sample files; handle edge cases (empty PDF, short audio)
+
+**Task 4 — ICD-10 and criteria tools** *(Day 3, ~3h)*
+- Download CMS 2025 ICD-10-CM flat file, convert to lookup dict, save as `icd10.json`
+- Implement `validate_icd10_codes(code_list)`
+- Create `criteria.json` with 10 procedure/diagnosis pairs and their medical necessity rules (source from CMS LCDs)
+- Implement `check_auth_criteria(dx_code, procedure_code)`
+
+**Task 5 — Train CatBoost denial risk model** *(Day 4, ~3h)*
+- Check PhysioNet account for MIMIC-IV access; if approved download and use it, otherwise download CMS DE-SynPUF (free, immediate)
+- Engineer denial label from dataset: claim adjustment reason codes (CMS) or billing/payer outcome fields (MIMIC)
+- Extract features: primary ICD-10 code, comorbidity count, procedure code, payer type, age, number of prior claims — all passed as-is, no encoding step
+- Declare ICD-10 and procedure codes as `cat_features` in CatBoostClassifier
+- Train with `iterations=500, eval_metric='AUC', early_stopping_rounds=50` on an 80/20 split
+- Evaluate: AUC, precision/recall at 0.5 threshold, calibration plot
+- Export model as `model.cbm`; document dataset choice and label engineering logic in `training/README.md`
+- Implement `score_clinical_risk(patient_data)` in the tool layer, loading `model.cbm` at startup
+
+**Task 6 — Agent orchestration loop** *(Day 4–5, ~6h)*
+- Implement the Claude tool-use loop: define all 6 tools as JSON schemas in the `tools=` parameter, build the message history loop, handle `tool_use` blocks in the response, execute tools locally, feed results back as `tool_result` messages
+- Handle all three input combinations: ID only, ID + PDF, ID + PDF + audio — agent routes to the appropriate tool subset based on what's available
+- Test full end-to-end run in terminal: `CLAUDE_MODEL=claude-haiku-4-5 python run_agent.py --patient-id <id>`
+- Verify Claude fires 4–6 tool calls correctly and final output JSON parses cleanly
+
+**Task 7 — Reasoning and output** *(Day 5, ~3h)*
+- Write Claude system prompt for prior auth specialist role
+- Format all tool outputs into structured prompt context
+- Parse Claude response into output JSON schema
+- Validate letter quality manually with 3 test patients
+- Write audit trace serialization
+
+**Task 8 — Integration test** *(Days 6–7, buffer)*
+- Run 5 end-to-end agent runs with different patient IDs and input combinations
+- Fix any tool failures or state bugs surfaced
+- Confirm output JSON is valid and letter is coherent for each run
+
+---
+
+### Week 2 — API, Frontend & Polish
+
+**Task 9 — FastAPI server** *(Day 8, ~4h)*
+- Implement `POST /run`, `GET /stream/{run_id}`, `GET /result/{run_id}`, `GET /patients`
+- Wire SSE streaming: emit one event per tool call completion
+- Test all endpoints with `curl` or HTTPie before touching the frontend
+
+**Task 10 — React shell** *(Day 9, ~4h)*
+- Scaffold with Vite (`npm create vite@latest`)
+- Build patient selector (fetches from `GET /patients`)
+- Build file upload components for PDF and audio
+- Wire submit to `POST /run`
+
+**Task 11 — Streaming step feed** *(Day 10, ~3h)*
+- Connect to `GET /stream/{run_id}` via `EventSource`
+- Render each SSE event as a step card (tool name, status, summary)
+- Animate cards in as they arrive; show spinner for in-progress tool
+
+**Task 12 — Output panel** *(Day 11, ~3h)*
+- Decision badge: green/yellow/red for APPROVE/NEEDS\_REVIEW/DENY
+- Confidence bar, risk tier badge, evidence summary text
+- Letter preview in a scrollable textarea
+- Download buttons for letter (`.txt`) and audit trace (`.json`)
+
+**Task 13 — Docker Compose** *(Day 12, ~2h)*
+- Write `docker-compose.yml` with HAPI FHIR + FastAPI backend as services
+- Confirm `docker compose up` starts both and frontend can reach backend
+- Add `.env.example` with `ANTHROPIC_API_KEY` and `CLAUDE_MODEL` as the only required secrets
+
+**Task 14 — README and demo** *(Days 13–14, ~4h)*
+- Write README: problem statement, architecture diagram, setup instructions (≤3 commands), demo GIF
+- Record demo GIF showing: select patient → upload PDF → submit → watch agent steps → view output → download letter
+- Add honest note about synthetic data, provider-agnostic LLM setup, and Epic sandbox status
+
+---
+
+## 9. Orchestration Framework
+
+**Use the raw Claude tool-use API directly. No LangGraph. No OpenAI.**
+
+Set `CLAUDE_MODEL=claude-haiku-4-5` during development (fast, cheap — cents per run). Set `CLAUDE_MODEL=claude-sonnet-4-5` for the final demo. One env var, no code changes.
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic()
+MODEL  = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
+
+messages = [{"role": "user", "content": build_initial_context(inputs)}]
+
+while True:
+    response = client.messages.create(
+        model=MODEL,
+        tools=TOOL_SCHEMAS,
+        messages=messages,
+        max_tokens=4096,
+    )
+    if response.stop_reason == "tool_use":
+        tool_block = next(b for b in response.content if b.type == "tool_use")
+        tool_output = execute_tool(tool_block.name, tool_block.input)
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": [{
+            "type": "tool_result",
+            "tool_use_id": tool_block.id,
+            "content": str(tool_output),
+        }]})
+    else:
+        final_output = parse_output(
+            next(b.text for b in response.content if b.type == "text")
+        )
+        break
+```
+
+**Required env vars**: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` — both in `.env.example` with a comment explaining when to use each model.
+
+---
+
+## 10. README Framing (draft)
+
+```
+PriorAI — Multimodal Prior Authorization Agent
+
+A locally-runnable AI agent that automates prior authorization package
+assembly for outpatient clinics. Given a patient ID, an optional clinical
+PDF, and an optional clinician voice note, PriorAI queries a FHIR R4
+server, validates diagnosis codes, checks medical necessity criteria,
+runs a CatBoost denial risk model, and generates a structured authorization
+submission and draft appeal letter.
+
+Stack: Claude API (tool-use) · HAPI FHIR R4 · Synthea · CatBoost ·
+faster-whisper · FastAPI · React
+
+Data: HAPI FHIR R4 server populated with Synthea synthetic patients.
+No real patient data is used. Epic sandbox integration is in progress.
+
+Setup (3 commands):
+  docker compose up -d        # starts HAPI FHIR + backend
+  python load_synthea.py      # loads synthetic patients
+  npm run dev                 # starts frontend at localhost:5173
+
+Set CLAUDE_MODEL=claude-haiku-4-5 for development,
+claude-sonnet-4-5 for demo-quality letter output.
+```
+
+---
+
+## 11. Risks & Mitigations
+
+| Risk | Likelihood | Mitigation |
+|------|-----------|------------|
+| Claude tool-use loop takes longer than expected | Low | Skeleton is ~200 lines; Anthropic docs have clear examples |
+| `faster-whisper` slow on CPU | Low | Use `base.en` model; batch audio offline |
+| MIMIC-IV access delayed beyond 2 days | Medium | Fall back to CMS DE-SynPUF immediately — apply for both on Day 1 |
+| CatBoost training slow on large dataset | Low | Start with `iterations=500`; subsample to 100k rows if needed — AUC impact is minimal |
+| Denial label engineering produces imbalanced classes | Medium | Use `scale_pos_weight` or `class_weights` in CatBoost; log class distribution in training README |
+| Claude letter quality inconsistent | Low | Few-shot prompt with example letter; temperature 0.3 |
+| Epic sandbox not approved in time | High | HAPI FHIR is the primary data layer; Epic is upside |
+
+---
+
+*End of PRD — PriorAI v1.0*
