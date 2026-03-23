@@ -64,14 +64,14 @@ def main():
                 "Patient ID": pid,
                 "Mode": "ID-only",
                 "Success": "Pass",
-                "Rec": output.get("recommendation", "UNKNOWN"),
+                "Decision": output.get("decision", "UNKNOWN"),
                 "Score": output.get("denial_risk_score", "N/A"),
                 "MM_Consumed": "N/A",
                 "Error": ""
             })
         except Exception as e:
             results.append({
-                "Patient ID": pid, "Mode": "ID-only", "Success": "Fail", "Error": str(e), "Rec": "N/A", "Score": "N/A", "MM_Consumed": "N/A"
+                "Patient ID": pid, "Mode": "ID-only", "Success": "Fail", "Error": str(e), "Decision": "N/A", "Score": "N/A", "MM_Consumed": "N/A"
             })
 
     # Pass 2: Multimodal (at least 2 PDF, at least 1 Audio)
@@ -128,14 +128,14 @@ def main():
                 "Patient ID": pid,
                 "Mode": "Multimodal",
                 "Success": "Pass" if consumption_verified else "Pass (Verify Rationale)",
-                "Rec": output.get("recommendation", "UNKNOWN"),
+                "Decision": output.get("decision", "UNKNOWN"),
                 "Score": output.get("denial_risk_score", "N/A"),
                 "MM_Consumed": "Yes" if consumption_verified else "Check Audit Trace",
                 "Error": ""
             })
         except Exception as e:
             results.append({
-                "Patient ID": pid, "Mode": "Multimodal", "Success": "Fail", "Error": str(e), "Rec": "N/A", "Score": "N/A", "MM_Consumed": "Fail"
+                "Patient ID": pid, "Mode": "Multimodal", "Success": "Fail", "Error": str(e), "Decision": "N/A", "Score": "N/A", "MM_Consumed": "Fail"
             })
         finally:
             if pdf_path and os.path.exists(pdf_path): os.remove(pdf_path)
@@ -145,10 +145,10 @@ def main():
     print("\n" + "=" * 100)
     print("INTEGRATION TEST SUMMARY (ID-ONLY & MULTIMODAL)")
     print("=" * 100)
-    print(f"{'Patient ID':<12} | {'Mode':<12} | {'Status':<6} | {'MM_Consumed':<12} | {'Rec':<12}")
+    print(f"{'Patient ID':<12} | {'Mode':<12} | {'Status':<6} | {'MM_Consumed':<12} | {'Decision':<12}")
     print("-" * 100)
     for r in results:
-        print(f"{r.get('Patient ID', 'N/A'):<12} | {r.get('Mode', 'N/A'):<12} | {r.get('Success', 'Fail'):<6} | {str(r.get('MM_Consumed', 'N/A')):<12} | {str(r.get('Rec', 'N/A')):<12}")
+        print(f"{r.get('Patient ID', 'N/A'):<12} | {r.get('Mode', 'N/A'):<12} | {r.get('Success', 'Fail'):<6} | {str(r.get('MM_Consumed', 'N/A')):<12} | {str(r.get('Decision', 'N/A')):<12}")
     print("=" * 100)
     
     # Update integration_results.md
@@ -164,16 +164,16 @@ def update_markdown_results(results):
     content += f"**Last Run**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     
     content += "## Pass 1: ID-Only Results\n\n"
-    content += "| Patient ID | Status | Recommendation | Denial Risk Score |\n"
+    content += "| Patient ID | Status | Decision | Denial Risk Score |\n"
     content += "|------------|--------|----------------|-------------------|\n"
     for r in id_only:
-        content += f"| {r['Patient ID']} | {r['Success']} | {r['Rec']} | {r['Score']} |\n"
+        content += f"| {r['Patient ID']} | {r['Success']} | {r['Decision']} | {r['Score']} |\n"
     
     content += "\n## Pass 2: Multimodal Results\n\n"
-    content += "| Patient ID | Status | MM Consumed | Recommendation | Denial Risk Score |\n"
+    content += "| Patient ID | Status | MM Consumed | Decision | Denial Risk Score |\n"
     content += "|------------|--------|-------------|----------------|-------------------|\n"
     for r in multimodal:
-        content += f"| {r['Patient ID']} | {r['Success']} | {r['MM_Consumed']} | {r['Rec']} | {r['Score']} |\n"
+        content += f"| {r['Patient ID']} | {r['Success']} | {r['MM_Consumed']} | {r['Decision']} | {r['Score']} |\n"
     
     with open(md_path, "w") as f:
         f.write(content)

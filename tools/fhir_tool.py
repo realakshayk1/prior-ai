@@ -48,6 +48,39 @@ def fetch_patient_context(patient_id: str) -> dict:
             }
             for o in resp.json().get("entry", [])
         ]
+
+        # 5. Fetch Procedures (for prior history)
+        resp = requests.get(f"{FHIR_BASE}Procedure?patient={patient_id}&_count=50")
+        procedures = [
+            {
+                "code": p.get("resource", {}).get("code", {}).get("coding", [{}])[0].get("code"),
+                "display": p.get("resource", {}).get("code", {}).get("coding", [{}])[0].get("display"),
+                "status": p.get("resource", {}).get("status")
+            }
+            for p in resp.json().get("entry", [])
+        ]
+
+        # 6. Fetch Claims (for prior history)
+        resp = requests.get(f"{FHIR_BASE}Claim?patient={patient_id}&_count=50")
+        claims = [
+            {
+                "id": c.get("resource", {}).get("id"),
+                "type": c.get("resource", {}).get("type", {}).get("coding", [{}])[0].get("code"),
+                "status": c.get("resource", {}).get("status")
+            }
+            for c in resp.json().get("entry", [])
+        ]
+
+        # 7. Fetch Coverage (for insurance validation)
+        resp = requests.get(f"{FHIR_BASE}Coverage?patient={patient_id}&_count=10")
+        coverage = [
+            {
+                "payor": c.get("resource", {}).get("payor", [{}])[0].get("display"),
+                "coverage_status": c.get("resource", {}).get("status"),
+                "coverage_class": c.get("resource", {}).get("class", [{}])[0].get("value") if c.get("resource", {}).get("class") else None
+            }
+            for c in resp.json().get("entry", [])
+        ]
         
         # Normalization
         context = {
@@ -57,7 +90,10 @@ def fetch_patient_context(patient_id: str) -> dict:
             "birthDate": patient.get("birthDate"),
             "conditions": conditions,
             "medications": medications,
-            "observations": observations
+            "observations": observations,
+            "procedures": procedures,
+            "claims": claims,
+            "coverage": coverage
         }
         return context
         

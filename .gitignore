@@ -199,6 +199,7 @@ cython_debug/
 .cursorindexingignore
 
 # Project specific
+node_modules/
 data/
 synthea_output/
 output/

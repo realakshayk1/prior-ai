@@ -12,6 +12,8 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('mock') === 'true') {
       setIsMock(true);
+    } else {
+      setIsMock(false);
     }
   }, []);
 

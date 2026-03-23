@@ -24,14 +24,16 @@ except ImportError as e:
 
 # Constants
 EXPECTED_OUTPUT_KEYS = {
-    "recommendation", "confidence", "clinical_rationale", "criteria_assessment", 
-    "denial_risk_score", "draft_letter", "citations", "audit_trace"
+    "decision", "confidence", "clinical_rationale", "criteria_assessment", 
+    "denial_risk_score", "draft_letter", "citations", "audit_trace",
+    "patient_name", "procedure_requested", "primary_diagnosis",
+    "criteria_met", "criteria_not_met", "recommended_actions"
 }
 RISK_MODEL_PATH = "model.cbm"
 _risk_model = None
 
 # 1. Tool Implementation for score_clinical_risk
-def score_clinical_risk(patient_data: dict) -> dict:
+def score_clinical_risk(patient_data: dict, procedure_code: str) -> dict:
     """
     Scores the clinical risk of denial for a prior authorization based on patient data.
     """
@@ -73,8 +75,15 @@ def score_clinical_risk(patient_data: dict) -> dict:
             fallbacks['primary_dx'] = "defaulted to 'missing' — no conditions provided in FHIR context"
             
         comorbidity_count = max(0, len(conditions) - 1)
-        proc_code = 'missing' # Currently not explicitly passed in patient_data dict for scoring tool
-        num_prior_claims = 0
+        proc_code = procedure_code
+        
+        # Derive num_prior_claims from procedures and claims in patient_data
+        procedures = patient_data.get('procedures', [])
+        claims_list = patient_data.get('claims', [])
+        num_prior_claims = len(procedures) + len(claims_list)
+        
+        if num_prior_claims == 0:
+            fallbacks['num_prior_claims'] = "defaulted to 0 — no prior procedures found in FHIR"
         
         features = [age, gender, primary_dx, proc_code, comorbidity_count, num_prior_claims]
         
@@ -82,6 +91,34 @@ def score_clinical_risk(patient_data: dict) -> dict:
         probs = _risk_model.predict_proba([features])[0]
         denial_prob = float(probs[1])
         
+        # Calculate SHAP values for this specific prediction
+        from catboost import Pool
+        feature_names = ['Age', 'Gender', 'Primary Diagnosis', 'Procedure Code', 'Comorbidity Count', 'Prior Claims']
+        
+        # Indices of categorical features in the features list: Gender(1), Primary DX(2), Procedure(3)
+        cat_feature_indices = [1, 2, 3]
+        
+        shap_values = _risk_model.get_feature_importance(
+            data=Pool([features], cat_features=cat_feature_indices), 
+            type='ShapValues'
+        )[0]
+        
+        # The last SHAP value is the base value, skip it
+        # Map values to names and sort by absolute magnitude
+        shap_map = []
+        for i in range(len(feature_names)):
+            shap_map.append({
+                "factor": feature_names[i],
+                "value": float(shap_values[i])
+            })
+        
+        # Sort by absolute SHAP value to get most impactful factors
+        shap_map.sort(key=lambda x: abs(x["value"]), reverse=True)
+        top_factors = [item["factor"] for item in shap_map[:3] if abs(item["value"]) > 0.01]
+        
+        if not top_factors:
+            top_factors = ["Baseline Risk"]
+
         risk_tier = "low"
         if denial_prob > 0.7:
             risk_tier = "high"
@@ -91,11 +128,15 @@ def score_clinical_risk(patient_data: dict) -> dict:
         result = {
             "denial_probability": denial_prob,
             "risk_tier": risk_tier,
-            "shap_top_factors": ["Primary Diagnosis", "Comorbidity Count"]
+            "shap_top_factors": top_factors,
+            "num_prior_claims": num_prior_claims
         }
         
         if fallbacks:
             result["feature_fallback"] = fallbacks
+            # Explicitly log the num_prior_claims fallback if it happened
+            if "num_prior_claims" in fallbacks:
+                result["num_prior_claims"] = fallbacks["num_prior_claims"]
             
         return result
     except Exception as e:
@@ -172,9 +213,10 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "patient_data": {"type": "object", "description": "Structured patient data dict from FHIR tool output"}
+                "patient_data": {"type": "object", "description": "Structured patient data dict from FHIR tool output"},
+                "procedure_code": {"type": "string", "description": "The code of the procedure being requested (e.g. HCPCS or CPT code)"}
             },
-            "required": ["patient_data"]
+            "required": ["patient_data", "procedure_code"]
         }
     }
 ]
@@ -198,10 +240,16 @@ The draft letter must include: patient demographics, diagnosis summary, procedur
 
 Output ONLY valid JSON matching this schema:
 {
-  "recommendation": "APPROVE | DENY | NEEDS_REVIEW",
+  "decision": "APPROVE | DENY | NEEDS_REVIEW",
   "confidence": float 0-1,
-  "clinical_rationale": "string - detailed rationale with specific diagnosis references, procedural justification, and exact clear basis for the recommendation",
-  "criteria_assessment": "string",
+  "patient_name": "string",
+  "procedure_requested": "string",
+  "primary_diagnosis": "string (Code + Description)",
+  "clinical_rationale": "string - detailed rationale with specific diagnosis references, procedural justification, and exact clear basis for the decision",
+  "criteria_assessment": "string - a brief summary text of the assessment",
+  "criteria_met": ["string - list of specific criteria found in medical records that were met"],
+  "criteria_not_met": ["string - list of specific criteria that were NOT found or NOT met"],
+  "recommended_actions": ["string - list of next steps for the provider"],
   "denial_risk_score": float 0-1,
   "draft_letter": "string",
   "citations": ["string"],
@@ -237,7 +285,7 @@ def execute_tool(tool_name: str, tool_input: dict, state: dict) -> dict:
         elif tool_name == "check_auth_criteria":
             return func(tool_input.get("dx_code"), tool_input.get("procedure_name"))
         elif tool_name == "score_clinical_risk":
-            return func(tool_input.get("patient_data"))
+            return func(tool_input.get("patient_data"), tool_input.get("procedure_code"))
     except Exception as e:
         return {"error": str(e), "tool": tool_name}
 
@@ -354,33 +402,88 @@ def run_orchestrator(patient_id: str, pdf: str = None, audio: str = None, trace_
         else:
             break
             
-    # 8. Final reasoning call
-    print("Agent tool loop complete. Generating final authorization package...")
+    # 8. Programmatic Confidence Calculation
+    criteria_res = state["tool_results"].get("check_auth_criteria", {})
+    risk_res = state["tool_results"].get("score_clinical_risk", {})
     
-    final_prompt = FINAL_REASONING_PROMPT + "\n\n=== AUDIT TRACE OF COMPLETED STEPS ===\n" + json.dumps(audit_trace, indent=2) + "\n\nGenerate the final JSON matching the schema precisely."
+    criteria_met = criteria_res.get("criteria_met_count", 0)
+    total_criteria = criteria_res.get("total_criteria_count", 0)
+    denial_risk = risk_res.get("denial_probability", 0.5) # Fallback to 0.5 if tool not called
     
-    final_response = client.messages.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": final_prompt}],
-        max_tokens=4096,
-        temperature=0.3
-    )
+    # Formula: (criteria_met_count / total_criteria_count) * (1 - denial_risk_score)
+    if total_criteria > 0:
+        calculated_confidence = (criteria_met / total_criteria) * (1 - denial_risk)
+    else:
+        # If no criteria tool called or no criteria found, use a baseline related to risk
+        calculated_confidence = 0.2 * (1 - denial_risk)
+        
+    calculated_confidence = max(0.0, min(1.0, calculated_confidence))
+    
+    # 9. Final reasoning call
+    print(f"Agent tool loop complete. Programmatic confidence: {calculated_confidence:.3f}")
+    
+    # Truncate audit trace outputs to avoid context bloat and JSON issues
+    clean_trace = []
+    for entry in audit_trace:
+        clean_entry = entry.copy()
+        if isinstance(clean_entry.get("output"), dict):
+            # Keep error messages but truncate large data
+            if "error" in clean_entry["output"]:
+                pass
+            else:
+                clean_entry["output"] = {k: (str(v)[:200] + "...") if len(str(v)) > 200 else v for k, v in clean_entry["output"].items()}
+        clean_trace.append(clean_entry)
 
-    final_text = next(b.text for b in final_response.content if b.type == "text")
+    confidence_injection = f"\n\nIMPORTANT: The confidence score has been programmatically calculated as {calculated_confidence:.3f} — use this exact value in your output, do not recalculate it."
+    
+    final_prompt = FINAL_REASONING_PROMPT + confidence_injection + "\n\n=== AUDIT TRACE OF COMPLETED STEPS ===\n" + json.dumps(clean_trace, indent=2) + "\n\nGenerate the final JSON matching the schema precisely."
+    
     try:
+        final_response = client.messages.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": final_prompt}],
+            max_tokens=4096,
+            temperature=0.3
+        )
+        
+        final_text = next(b.text for b in final_response.content if b.type == "text")
+        
+        # Robust JSON extraction (Claude often adds ```json blocks)
+        json_start = final_text.find("{")
+        json_end = final_text.rfind("}")
+        if json_start != -1 and json_end != -1:
+            final_text = final_text[json_start:json_end+1]
+        
         final_json = json.loads(final_text)
         
         # Add the audit trace formally if it missed it
         if "audit_trace" not in final_json or not final_json["audit_trace"]:
-             final_json["audit_trace"] = audit_trace
+             final_json["audit_trace"] = clean_trace
+
+        # Validation and Drift Check
+        claude_confidence = final_json.get("confidence", 0.0)
+        if not isinstance(claude_confidence, (int, float)):
+            try: claude_confidence = float(claude_confidence)
+            except: claude_confidence = 0.0
+            
+        final_json["confidence"] = max(0.0, min(1.0, float(claude_confidence)))
+        
+        if abs(final_json["confidence"] - calculated_confidence) > 0.05:
+            if "audit_flags" not in final_json:
+                final_json["audit_flags"] = []
+            final_json["audit_flags"].append(f"confidence_drift: Claude returned {final_json['confidence']}, programmatic value was {calculated_confidence:.3f}")
+
+        # Ensure we use the programmatic one if we want strict enforcement, 
+        # but the prompt says "do not recalculate it". 
+        # If drift is high, it's flagged.
 
         for key in EXPECTED_OUTPUT_KEYS:
             assert key in final_json, f"Missing key in final JSON: {key}"
 
-        recommendation = final_json.get("recommendation", "UNKNOWN")
+        decision = final_json.get("decision", "UNKNOWN")
         confidence = final_json.get("confidence", 0.0)
         
-        print(f"\nFinal Recommendation: {recommendation}")
+        print(f"\nFinal Decision: {decision}")
         print(f"Confidence: {confidence * 100:.1f}%\n")
         
         out_dir = "output"

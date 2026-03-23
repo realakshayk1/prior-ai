@@ -177,8 +177,19 @@ async def get_patients():
                         name_str = given_str
                     elif name_obj.get("text"):
                         name_str = name_obj.get("text")
+
+                # Parse birthDate and calculate age
+                birth_date_str = resource.get("birthDate")
+                age = None
+                if birth_date_str:
+                    try:
+                        birth_date = datetime.date.fromisoformat(birth_date_str)
+                        today = datetime.date.today()
+                        age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+                    except ValueError:
+                        pass # age remains None
                 
-                patients.append({"id": pid, "name": name_str})
+                patients.append({"id": pid, "name": name_str, "age": age})
                 
             return patients
     except Exception as e:

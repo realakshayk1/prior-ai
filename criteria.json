@@ -2,5 +2,11 @@
   "I82.409": "Venous Duplex Scan",
   "M17.11": "Unilateral Knee Arthroplasty",
   "E11.9": "HbA1c Lab Test",
-  "I10": "Blood Pressure Monitoring"
+  "I10": "Blood Pressure Monitoring",
+  "I25.10": "Coronary Angiography (93458)",
+  "M16.11": "Total Hip Arthroplasty (27130)",
+  "C50.911": "Modified Radical Mastectomy (19307)",
+  "F33.1": "Psychotherapy (90837)",
+  "G44.1": "MRI Brain (70551)",
+  "E11.65": "Endocrinology Consultation (99244)"
 }

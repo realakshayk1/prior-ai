@@ -6,6 +6,7 @@ from sklearn.metrics import roc_auc_score, precision_score, recall_score
 from sklearn.calibration import CalibrationDisplay
 import matplotlib.pyplot as plt
 import os
+import shap
 
 # Paths
 DATA_DIR = "data/cms"
@@ -127,6 +128,18 @@ if __name__ == "__main__":
     plt.title('Calibration Curve (Scaled to Density)')
     plt.savefig('calibration_plot.png')
     print("Saved calibration plot to calibration_plot.png")
+    
+    # SHAP summary plot
+    print("Generating SHAP summary plot...")
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_test)
+    
+    plt.figure(figsize=(10, 6))
+    shap.summary_plot(shap_values, X_test, show=False)
+    plt.title("SHAP Summary Plot - Prior Auth Denial Risk")
+    plt.tight_layout()
+    plt.savefig('shap_summary.png')
+    print("Saved SHAP summary plot to shap_summary.png")
     
     model.save_model("model.cbm")
     print("Model saved as model.cbm")

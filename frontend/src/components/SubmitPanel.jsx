@@ -12,9 +12,9 @@ export default function SubmitPanel({ isMock, runStatus, onRunStart, onError }) 
     async function fetchPatients() {
       if (isMock) {
         setPatients([
-          { id: 'pat_1', name: 'James Wilson' },
-          { id: 'pat_2', name: 'Sarah Connor' },
-          { id: 'pat_3', name: 'Michael Scott' }
+          { id: 'pat_1', name: 'Wilson, James', age: 45 },
+          { id: 'pat_2', name: 'Connor, Sarah', age: 32 },
+          { id: 'pat_3', name: 'Scott, Michael', age: 43 }
         ]);
         setIsLoadingPatients(false);
         return;
@@ -81,7 +81,9 @@ export default function SubmitPanel({ isMock, runStatus, onRunStart, onError }) 
               {isLoadingPatients ? 'Loading patients...' : 'Select a patient'}
             </option>
             {patients.map(p => (
-              <option key={p.id} value={p.id}>{p.id} - {p.name || ''}</option>
+              <option key={p.id} value={p.id}>
+                {p.name}{p.age !== null ? ` (Age ${p.age})` : ''}
+              </option>
             ))}
           </select>
           {isLoadingPatients && (

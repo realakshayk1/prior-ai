@@ -18,7 +18,7 @@ export default function OutputPanel({ runId, isMock }) {
             procedure_description: "Magnetic resonance imaging of lumbar spine without contrast",
             primary_diagnosis: "M54.50 (Low back pain)",
             supporting_diagnoses: ["M51.26 (Other intervertebral disc displacement)"],
-            recommendation: "APPROVE",
+            decision: "APPROVE",
             confidence: 0.94,
             denial_risk_score: 0.12,
             clinical_rationale: "Patient presents with persistent severe low back pain radiating to the left leg, unresponsive to 6 weeks of conservative therapy (NSAIDs, physical therapy). Signs of radiculopathy are present. Given the duration and failure of conservative management, MRI is medically necessary to assess for disc herniation or nerve root compression.\n\nCriteria met: 6 weeks conservative therapy failed, evidence of radiculopathy.",
@@ -36,7 +36,23 @@ export default function OutputPanel({ runId, isMock }) {
         const res = await fetch(`http://localhost:8000/result/${runId}`);
         if (!res.ok) throw new Error('Result fetch failed');
         const data = await res.json();
-        setResult(data);
+        
+        // Ensure data has the expected structure even if some fields are missing
+        const processedData = {
+          ...data,
+          patient_name: data.patient_name || data.name || "Unknown Patient",
+          procedure_requested: data.procedure_requested || "Unknown Procedure",
+          primary_diagnosis: data.primary_diagnosis || "Not specified",
+          decision: data.decision || "NEEDS_REVIEW",
+          confidence: data.confidence || 0.0,
+          denial_risk_score: data.denial_risk_score || 0.5,
+          clinical_rationale: data.clinical_rationale || "No rationale provided.",
+          criteria_met: data.criteria_met || [],
+          criteria_not_met: data.criteria_not_met || [],
+          recommended_actions: data.recommended_actions || []
+        };
+        
+        setResult(processedData);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -73,7 +89,7 @@ export default function OutputPanel({ runId, isMock }) {
 
   const handleDownloadLetter = () => {
     // Generate letter from clinical rationale, explicitly formatting newlines to preserve paragraph structure.
-    const letterContent = `Prior Authorization Request Form\n\nPatient: ${result.patient_name} (${result.patient_id})\nRequested Procedure: ${result.procedure_requested}\nPrimary Diagnosis: ${result.primary_diagnosis}\n\nClinical Rationale:\n${result.clinical_rationale}\n\nRecommendation: ${result.recommendation} (Confidence: ${(result.confidence * 100).toFixed(1)}%)`;
+    const letterContent = `Prior Authorization Request Form\n\nPatient: ${result.patient_name} (${result.patient_id})\nRequested Procedure: ${result.procedure_requested}\nPrimary Diagnosis: ${result.primary_diagnosis}\n\nClinical Rationale:\n${result.clinical_rationale}\n\nDecision: ${result.decision} (Confidence: ${(result.confidence * 100).toFixed(1)}%)`;
     
     const blob = new Blob([letterContent], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -115,8 +131,8 @@ export default function OutputPanel({ runId, isMock }) {
                 <h3 className="text-xl font-semibold text-slate-800">{result.patient_name}</h3>
                 <p className="text-slate-500 text-sm">{result.procedure_requested}</p>
               </div>
-              <div className={`px-4 py-1.5 rounded-full border font-bold tracking-wide ${getBadgeColor(result.recommendation)}`}>
-                {result.recommendation}
+              <div className={`px-4 py-1.5 rounded-full border font-bold tracking-wide ${getBadgeColor(result.decision)}`}>
+                {result.decision}
               </div>
             </div>
 
