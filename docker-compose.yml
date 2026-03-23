@@ -1,0 +1,43 @@
+services:
+  hapi-fhir:
+    image: hapiproject/hapi:latest
+    container_name: hapi-fhir
+    ports:
+      - "8080:8080"
+    volumes:
+      - hapi-data:/data/hapi
+#    environment:
+#      - "spring.datasource.url=jdbc:h2:file:/data/hapi/h2;DB_CLOSE_ON_EXIT=FALSE"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: prior-ai-backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      FHIR_BASE_URL: http://hapi-fhir:8080/fhir
+    depends_on:
+      - hapi-fhir
+    volumes:
+      - ./output:/app/output
+      - ./model.cbm:/app/model.cbm
+      - ./synthea_output:/app/synthea_output
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: prior-ai-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  hapi-data:
