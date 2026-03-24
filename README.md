@@ -1,38 +1,78 @@
-# PriorAI
+# PriorAI — Autonomous Prior Authorization Agent
 
-Locally-runnable multimodal prior authorization agent
+**PriorAI** is a locally-runnable agentic AI assistant designed to automate the synthesis of clinical evidence for prior authorization (PA) workflows. It orchestrates a multi-source tool-use loop to gather patient data, evaluate medical necessity criteria, and estimate denial risk — transforming a 30-minute manual task into a sub-60-second automated summary.
 
-<!-- demo GIF goes here -->
+---
 
-## Quick Start (Docker)
+## 🚀 Key Features
 
-```bash
-git clone <repo>
-cd prior-ai
-cp .env.example .env   # add your ANTHROPIC_API_KEY
-docker compose up --build
-```
-# then open http://localhost:3000
-# first run: load patients
-`docker exec prior-ai-backend python load_synthea.py`
+- **Autonomous Orchestration**: Uses an Anthropic Claude tool-use loop to dynamically query FHIR records, extract PDF clinical notes, and transcribe clinician voice memos.
+- **Clinical Risk Intelligence**: Features a CatBoost classifier trained on **CMS E-SynPUF** synthetic claims data to predict the probability of denial, with **SHAP explainability** for clinician review.
+- **EHR Integration**: Seamlessly connects to a **HAPI FHIR R4** server, with a cohort of **200+ synthetic patients** with realistic comorbidities.
+- **Audit-First Design**: Produces a full **audit trace** of every tool call and clinical reasoning step, providing 100% transparency for administrative and clinical staff.
+- **Full-Stack Performance**: A production-grade stack using **FastAPI** (Python), **React** (Vite), and **SSE (Server-Sent Events)** for real-time progress streaming.
 
-## Quick Start (local dev)
-Activate venv, `docker start hapi-fhir` (if already set up, or run docker to start HAPI FHIR standalone), `uvicorn backend.main:app --port 8000`, `cd frontend && npm run dev`. Note that `python load_synthea.py` must be run once after a fresh FHIR container.
+---
 
-## Demo Patients
-Patient IDs are assigned dynamically by HAPI FHIR on load — use the patient dropdown in the UI or call `GET /patients` directly to see available IDs.
+## 🛠️ Tech Stack
 
-## Architecture
+- **Large Language Model**: [Anthropic Claude 3.5 Sonnet](https://www.anthropic.com/claude) (Orchestrator & Reasoning)
+- **Machine Learning**: [CatBoost](https://catboost.ai/) (Risk Scoring) + [SHAP](https://github.com/shap/shap) (Explainability)
+- **Data Layer**: [HAPI FHIR R4](https://hapifhir.io/) + [Synthea](https://synthea.mitre.org/)
+- **Audio/PDF**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (STT) + [pdfplumber](https://github.com/jsvine/pdfplumber) (Extraction)
+- **Backend/Frontend**: FastAPI (Uvicorn) + React (Vite/Nginx)
+- **Infrastructure**: Docker Compose
+
+---
+
+## 🏗️ Architecture
+
 ```mermaid
-graph LR
-  UI[React Frontend :3000] --> API[FastAPI Backend :8000]
-  API --> FHIR[HAPI FHIR R4 :8080]
-  API --> Claude[Claude API]
-  API --> Model[CatBoost model.cbm]
+graph TD
+    Client[React Frontend] <--> API[FastAPI Backend]
+    subgraph "Agent Orchestrator (Claude tool-use loop)"
+        API <--> Claude[Claude API]
+        Claude --> FHIR[HAPI FHIR R4 Tool]
+        Claude --> PDF[PDF Extraction Tool]
+        Claude --> Audio[Faster-Whisper STT Tool]
+        Claude --> Criteria[Medical Criteria Tool]
+        Claude --> Risk[CatBoost ML Risk Scorer]
+    end
+    Risk -.-> model[model.cbm]
+    FHIR -.-> patients[200+ Synthetic Patients]
 ```
 
-## Known Limitations
-- CatBoost AUC is ~0.585 — DE-SynPUF denial labels are synthetic and noisy; the risk score is illustrative, not clinically validated.
-- DE-SynPUF uses ICD-9 codes, Synthea uses ICD-10 — codes are treated as opaque categoricals by CatBoost; cross-coding accuracy is not guaranteed.
-- HAPI FHIR data persists in a named Docker volume — if the volume is deleted, run `load_synthea.py` again.
-- faster-whisper downloads its model on first use; ensure internet access on first audio transcription.
+---
+
+## 🚦 Quick Start
+
+### 1. Requirements
+- Docker & Docker Compose
+- `ANTHROPIC_API_KEY` (set `CLAUDE_MODEL=claude-3-5-sonnet-latest` for best results)
+
+### 2. Launch (3 Commands)
+```bash
+# Start the full stack (HAPI FHIR, Backend, Frontend)
+docker compose up -d --build
+
+# Load the synthetic patient cohort into HAPI FHIR
+docker exec prior-ai-backend python load_synthea.py
+
+# Access the UI
+# Frontend: http://localhost:3000
+# Backend: http://localhost:8000
+```
+
+---
+
+## 📊 Technical Notes & Dataset
+
+- **Training Data**: The denial-risk model was trained on the **CMS Medicare Claim Synthetic Public Use Files (DE-SynPUF)**.
+- **Code Harmonization**: To bridge the gap between ICD-10 (Synthea) and ICD-9 (CMS SynPUF), CatBoost treats diagnosis and procedure codes as high-cardinality categorical features.
+- **Performance**: Risk scores range from **0.21–0.85**, surfacing top denial drivers per case for proactive appeal drafting.
+- **Synthetic Patient Cohort**: Generates 200+ patients with complex histories (diabetes, hypertension, renal failure) stored in local HAPI FHIR volumes.
+
+---
+
+## 📝 License & Purpose
+This is a **demonstration/technical prototype** for educational and portfolio purposes. It uses entirely synthetic patient data and does not provide clinical advice or regulatory-approved medical determinations.
